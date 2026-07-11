@@ -1,10 +1,10 @@
 -- =================================================================
--- SISTEM UTAMA: AFK FARM MING (Final Version)
+-- SISTEM UTAMA: AFK FARM MING (Final - With Webhook 10 Menit)
 -- =================================================================
 
 local Stages = game:GetService("Workspace").BoatStages.NormalStages
 local client = game:GetService("Players").LocalPlayer
-local Penguin = workspace.ChangeCharacter
+local Penguin = workspace:FindFirstChild("ChangeCharacter")
 
 -- 1. SINKRONISASI KONFIGURASI
 local cfg = getgenv().Config or {}
@@ -49,10 +49,9 @@ if antiAfk then
 end
 
 -- 4. GUI & PANEL
-local screenGui = Instance.new("ScreenGui")
+local screenGui = Instance.new("ScreenGui", game:GetService("CoreGui"))
 screenGui.Name = "BABFT_UltimateTracker"
 screenGui.ResetOnSpawn = false
-screenGui.Parent = game:GetService("CoreGui")
 
 local MainFrame = Instance.new("Frame", screenGui)
 MainFrame.Size = UDim2.new(0, 290, 0, 240); MainFrame.Position = UDim2.new(0.5, -145, 0.5, -120)
@@ -84,7 +83,7 @@ local LiveTotalGold, LiveTotalBlocks = 0, 0
 
 task.spawn(function()
     while autoFarm do
-        task.wait(9) -- Kirim webhook tiap 10 menit
+        task.wait(600) -- Kirim webhook setiap 10 menit
         if webhookEnd and webhookUrl ~= "" then
             local msg = string.format("username: %s\nEarning gold: 💰 %s\nEarning gold block: 🟥 %s", client.Name, tostring(LiveTotalGold), tostring(LiveTotalBlocks))
             local request = syn and syn.request or http_request or request or http.request
@@ -98,10 +97,12 @@ end)
 task.spawn(function()
     while autoFarm do
         task.wait(1)
-        local elapsed = os.time() - StartTime
-        TimerLabel.Text = string.format("Session Time: %02d:%02d:%02d", math.floor(elapsed/3600), math.floor((elapsed%3600)/60), elapsed%60)
-        if LiveTotalGold > 0 and elapsed > 0 then
-            GPHLabel.Text = "Gold / Hour: ⚡ ~" .. math.floor((LiveTotalGold / elapsed) * 3600)
+        if client.Character and client.Character:FindFirstChild("HumanoidRootPart") then
+            local elapsed = os.time() - StartTime
+            TimerLabel.Text = string.format("Session Time: %02d:%02d:%02d", math.floor(elapsed/3600), math.floor((elapsed%3600)/60), elapsed%60)
+            if LiveTotalGold > 0 and elapsed > 0 then
+                GPHLabel.Text = "Gold / Hour: ⚡ ~" .. math.floor((LiveTotalGold / elapsed) * 3600)
+            end
         end
     end
 end)
@@ -113,27 +114,33 @@ task.spawn(function()
         
         for i = 1, 9 do
             if not autoFarm then break end
-            local stageName = "CaveStage"..i
-            if Stages:FindFirstChild(stageName) then
-                local target = Stages[stageName].DarknessPart.CFrame
-                platform.CFrame = target * CFrame.new(0, -4.5, 0)
-                client.Character.HumanoidRootPart.CFrame = target
-                
-                local goldEvent = workspace:FindFirstChild("ClaimRiverResultsGold")
-                if goldEvent then goldEvent:FireServer() end
-                
-                LiveTotalGold += goldStage
-                TotalGoldLabel.Text = "Gold Earned: 💰 " .. LiveTotalGold
-                
-                if i == 9 then
-                    LiveTotalBlocks += goldBlock
-                    TotalGoldBlockLabel.Text = "Gold Block Earned: 🟥 " .. LiveTotalBlocks
+            
+            if client.Character and client.Character:FindFirstChild("HumanoidRootPart") then
+                local stageName = "CaveStage"..i
+                if Stages:FindFirstChild(stageName) then
+                    local target = Stages[stageName].DarknessPart.CFrame
+                    platform.CFrame = target * CFrame.new(0, -4.5, 0)
+                    client.Character.HumanoidRootPart.CFrame = target
+                    
+                    local goldEvent = workspace:FindFirstChild("ClaimRiverResultsGold")
+                    if goldEvent then goldEvent:FireServer() end
+                    
+                    LiveTotalGold += goldStage
+                    TotalGoldLabel.Text = "Gold Earned: 💰 " .. LiveTotalGold
+                    
+                    if i == 9 then
+                        LiveTotalBlocks += goldBlock
+                        TotalGoldBlockLabel.Text = "Gold Block Earned: 🟥 " .. LiveTotalBlocks
+                    end
+                    task.wait(3)
                 end
-                task.wait(3)
+            else
+                task.wait(1)
             end
         end
         platform:Destroy()
-        Penguin:FireServer("PenguinCharacter")
+        if Penguin then Penguin:FireServer("PenguinCharacter") end
         task.wait(2)
     end
 end)
+
