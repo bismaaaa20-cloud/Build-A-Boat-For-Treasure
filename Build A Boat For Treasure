@@ -1,99 +1,138 @@
 -- =================================================================
--- AFK FARM MING - FULL VERSION (1 - 5)
+-- LOGIKA UTAMA SKRIP AFK FARM MING - VERSI DETAIL PANJANG
 -- =================================================================
 
--- 1. KONFIGURASI AWAL
 local Stages = game:GetService("Workspace").BoatStages.NormalStages
 local client = game:GetService("Players").LocalPlayer
-local cfg = getgenv().Config or {}
-cfg.Setting_Farm = cfg.Setting_Farm or {}
-cfg.Anti_AFK = cfg.Anti_AFK or {}
-cfg.Webhook = cfg.Webhook or {}
+local Penguin = workspace.ChangeCharacter
+local HttpService = game:GetService("HttpService")
 
-local autoFarm = cfg.Setting_Farm.Auto_Farm ~= false
-local fpsBoost = cfg.Setting_Farm.FPS_Boost == true
-local antiAfk = cfg.Anti_AFK.Enable ~= false
-local webhookUrl = cfg.Webhook.UrlWebhook or ""
+-- Konfigurasi Global
+local cfg = getgenv().Config or {
+    ["Setting_Farm"] = { ["Auto_Farm"] = true, ["FPS_Boost"] = true, ["Gold_Per_Stage"] = 16 },
+    ["Anti_AFK"] = { ["Enable"] = true },
+    ["Webhook"] = { ["UrlWebhook"] = "", ["Enable"] = true }
+}
 
-if game:GetService("CoreGui"):FindFirstChild("BABFT_UltimateTracker") then
-    game:GetService("CoreGui").BABFT_UltimateTracker:Destroy()
-end
-
--- 2. FPS BOOST
-if fpsBoost then
+-- 1. FITUR FPS BOOST
+if cfg["Setting_Farm"]["FPS_Boost"] then
     task.spawn(function()
-        for _, v in pairs(workspace:GetDescendants()) do
-            if v:IsA("Part") or v:IsA("CornerWedgePart") then v.Material = Enum.Material.SmoothPlastic end
-            if v:IsA("Decal") or v:IsA("Texture") then v:Destroy() end
+        local descendants = workspace:GetDescendants()
+        for i = 1, #descendants do
+            local v = descendants[i]
+            if v:IsA("Part") or v:IsA("CornerWedgePart") or v:IsA("TrussPart") or v:IsA("WedgePart") then
+                v.Material = Enum.Material.SmoothPlastic
+            elseif v:IsA("Decal") or v:IsA("Texture") then
+                v:Destroy()
+            end
         end
         game:GetService("Lighting").GlobalShadows = false
     end)
 end
 
--- 3. ANTI-AFK
-if antiAfk then
+-- 2. FITUR ANTI-AFK
+if cfg["Anti_AFK"]["Enable"] then
     local VirtualUser = game:GetService("VirtualUser")
-    client.Idled:Connect(function() VirtualUser:CaptureController(); VirtualUser:ClickButton2(Vector2.new(0,0)) end)
+    client.Idled:Connect(function()
+        VirtualUser:CaptureController()
+        VirtualUser:ClickButton2(Vector2.new(0,0))
+    end)
 end
 
--- 4. GUI & PANEL
+-- 3. PANEL GUI
 local screenGui = Instance.new("ScreenGui", game:GetService("CoreGui"))
-screenGui.Name = "BABFT_UltimateTracker"
 local MainFrame = Instance.new("Frame", screenGui)
 MainFrame.Size = UDim2.new(0, 290, 0, 240); MainFrame.Position = UDim2.new(0.5, -145, 0.5, -120)
 MainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30); MainFrame.Active = true; MainFrame.Draggable = true
 
-local TitleBar = Instance.new("TextLabel", MainFrame)
-TitleBar.Size = UDim2.new(1, 0, 0, 40); TitleBar.BackgroundColor3 = Color3.fromRGB(230, 126, 34)
-TitleBar.Text = "AFK FARM MING"; TitleBar.TextColor3 = Color3.fromRGB(255, 255, 255); TitleBar.Font = Enum.Font.GothamBold
-
-local ScrollFrame = Instance.new("ScrollingFrame", MainFrame)
-ScrollFrame.Size = UDim2.new(1, -20, 1, -55); ScrollFrame.Position = UDim2.new(0, 10, 0, 50)
-ScrollFrame.BackgroundTransparency = 1; ScrollFrame.CanvasSize = UDim2.new(0, 0, 0, 200)
-
-local yPos = 0
-local function CreateLabel(text, color)
-    local label = Instance.new("TextLabel", ScrollFrame)
-    label.Size = UDim2.new(1, 0, 0, 30); label.Position = UDim2.new(0, 0, 0, yPos); label.BackgroundTransparency = 1
-    label.Text = text; label.TextColor3 = color; label.TextXAlignment = Enum.TextXAlignment.Left; label.TextSize = 14
-    yPos = yPos + 30
-    return label
-end
-local TimerLabel = CreateLabel("Session: 00:00:00", Color3.fromRGB(255, 255, 255))
-local GoldLabel = CreateLabel("Gold: 0", Color3.fromRGB(46, 204, 113))
-
--- 5. ENGINE UTAMA, TELEPORT & WEBHOOK
-local StartTime, totalGold = os.time(), 0
-task.spawn(function()
-    while autoFarm do
-        task.wait(600) -- Webhook (Telepon) tiap 10 menit
-        if webhookUrl ~= "" then
-            local msg = {["content"] = "User: " .. client.Name .. " | Total Gold: " .. totalGold}
-            request({Url = webhookUrl, Method = "POST", Headers = {["content-type"] = "application/json"}, Body = game:GetService("HttpService"):JSONEncode(msg)})
-        end
+-- 4. LOGIKA WEBHOOK
+local function SendWebhookLog(gold)
+    if cfg["Webhook"]["Enable"] and cfg["Webhook"]["UrlWebhook"] ~= "" then
+        local data = { ["content"] = "Update: " .. client.Name .. " | Gold: " .. gold }
+        request({Url = cfg["Webhook"]["UrlWebhook"], Method = "POST", Headers = {["content-type"] = "application/json"}, Body = HttpService:JSONEncode(data)})
     end
-end)
+end
 
+-- 5 & 6. ENGINE FARM (LOGIKA TELEPORT DIPISAH PER STAGE)
 task.spawn(function()
-    while autoFarm do
-        task.wait(1)
-        if client.Character and client.Character:FindFirstChild("HumanoidRootPart") then
-            local elapsed = os.time() - StartTime
-            TimerLabel.Text = string.format("Session: %02d:%02d:%02d", math.floor(elapsed/3600), math.floor((elapsed%3600)/60), elapsed%60)
-            
-            -- TELEPORTASI KE STAGE 9
-            local stage9 = Stages:FindFirstChild("CaveStage9")
-            if stage9 and stage9:FindFirstChild("DarknessPart") then
-                client.Character.HumanoidRootPart.CFrame = stage9.DarknessPart.CFrame
-                
-                -- KLAIM GOLD
-                local goldEvent = workspace:FindFirstChild("ClaimRiverResultsGold")
-                if goldEvent then 
-                    goldEvent:FireServer(); 
-                    totalGold = totalGold + 16; 
-                    GoldLabel.Text = "Gold: " .. totalGold 
-                end
-            end
+    while cfg["Setting_Farm"]["Auto_Farm"] do
+        local platform = Instance.new("Part", workspace)
+        platform.Size = Vector3.new(35, 3, 35); platform.Anchored = true; platform.Transparency = 0.5
+
+        -- Teleport Stage 1
+        local s1 = Stages:FindFirstChild("CaveStage1")
+        if s1 and s1:FindFirstChild("DarknessPart") then
+            client.Character.HumanoidRootPart.CFrame = s1.DarknessPart.CFrame
+            platform.CFrame = s1.DarknessPart.CFrame * CFrame.new(0, -4.5, 0)
+            task.wait(5)
         end
+
+        -- Teleport Stage 2
+        local s2 = Stages:FindFirstChild("CaveStage2")
+        if s2 and s2:FindFirstChild("DarknessPart") then
+            client.Character.HumanoidRootPart.CFrame = s2.DarknessPart.CFrame
+            platform.CFrame = s2.DarknessPart.CFrame * CFrame.new(0, -4.5, 0)
+            task.wait(5)
+        end
+
+        -- Teleport Stage 3
+        local s3 = Stages:FindFirstChild("CaveStage3")
+        if s3 and s3:FindFirstChild("DarknessPart") then
+            client.Character.HumanoidRootPart.CFrame = s3.DarknessPart.CFrame
+            platform.CFrame = s3.DarknessPart.CFrame * CFrame.new(0, -4.5, 0)
+            task.wait(3)
+        end
+
+        -- Teleport Stage 4
+        local s4 = Stages:FindFirstChild("CaveStage4")
+        if s4 and s4:FindFirstChild("DarknessPart") then
+            client.Character.HumanoidRootPart.CFrame = s4.DarknessPart.CFrame
+            platform.CFrame = s4.DarknessPart.CFrame * CFrame.new(0, -4.5, 0)
+            task.wait(3)
+        end
+
+        -- Teleport Stage 5
+        local s5 = Stages:FindFirstChild("CaveStage5")
+        if s5 and s5:FindFirstChild("DarknessPart") then
+            client.Character.HumanoidRootPart.CFrame = s5.DarknessPart.CFrame
+            platform.CFrame = s5.DarknessPart.CFrame * CFrame.new(0, -4.5, 0)
+            task.wait(3)
+        end
+
+        -- Teleport Stage 6
+        local s6 = Stages:FindFirstChild("CaveStage6")
+        if s6 and s6:FindFirstChild("DarknessPart") then
+            client.Character.HumanoidRootPart.CFrame = s6.DarknessPart.CFrame
+            platform.CFrame = s6.DarknessPart.CFrame * CFrame.new(0, -4.5, 0)
+            task.wait(3)
+        end
+
+        -- Teleport Stage 7 (Cas)
+        local s7 = Stages:FindFirstChild("CaveStage7")
+        if s7 and s7:FindFirstChild("DarknessPart") then
+            client.Character.HumanoidRootPart.CFrame = s7.DarknessPart.CFrame
+            platform.CFrame = s7.DarknessPart.CFrame * CFrame.new(0, -4.5, 0)
+            task.wait(1)
+        end
+
+        -- Teleport Stage 8
+        local s8 = Stages:FindFirstChild("CaveStage8")
+        if s8 and s8:FindFirstChild("DarknessPart") then
+            client.Character.HumanoidRootPart.CFrame = s8.DarknessPart.CFrame
+            platform.CFrame = s8.DarknessPart.CFrame * CFrame.new(0, -4.5, 0)
+            task.wait(3.5)
+        end
+
+        -- Teleport Stage 9
+        local s9 = Stages:FindFirstChild("CaveStage9")
+        if s9 and s9:FindFirstChild("DarknessPart") then
+            client.Character.HumanoidRootPart.CFrame = s9.DarknessPart.CFrame
+            platform.CFrame = s9.DarknessPart.CFrame * CFrame.new(0, -4.5, 0)
+            task.wait(3.5)
+        end
+
+        platform:Destroy()
+        Penguin:FireServer("PenguinCharacter")
+        task.wait(2)
     end
 end)
