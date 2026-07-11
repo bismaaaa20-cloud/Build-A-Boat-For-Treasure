@@ -1,24 +1,19 @@
 -- =================================================================
--- SISTEM UTAMA: AFK FARM MING (Final - With Webhook 10 Menit)
+-- AFK FARM MING - FULL VERSION (1 - 5)
 -- =================================================================
 
+-- 1. KONFIGURASI AWAL
 local Stages = game:GetService("Workspace").BoatStages.NormalStages
 local client = game:GetService("Players").LocalPlayer
-local Penguin = workspace:FindFirstChild("ChangeCharacter")
-
--- 1. SINKRONISASI KONFIGURASI
 local cfg = getgenv().Config or {}
 cfg.Setting_Farm = cfg.Setting_Farm or {}
 cfg.Anti_AFK = cfg.Anti_AFK or {}
 cfg.Webhook = cfg.Webhook or {}
 
-local autoFarm    = cfg.Setting_Farm.Auto_Farm ~= false
-local fpsBoost    = cfg.Setting_Farm.FPS_Boost == true
-local goldStage   = cfg.Setting_Farm.Gold_Per_Stage or 16
-local goldBlock   = cfg.Setting_Farm.Gold_Block_Per_Round or 1
-local antiAfk     = cfg.Anti_AFK.Enable ~= false
-local webhookEnd  = cfg.Webhook.Enable == true
-local webhookUrl  = cfg.Webhook.UrlWebhook or ""
+local autoFarm = cfg.Setting_Farm.Auto_Farm ~= false
+local fpsBoost = cfg.Setting_Farm.FPS_Boost == true
+local antiAfk = cfg.Anti_AFK.Enable ~= false
+local webhookUrl = cfg.Webhook.UrlWebhook or ""
 
 if game:GetService("CoreGui"):FindFirstChild("BABFT_UltimateTracker") then
     game:GetService("CoreGui").BABFT_UltimateTracker:Destroy()
@@ -28,68 +23,53 @@ end
 if fpsBoost then
     task.spawn(function()
         for _, v in pairs(workspace:GetDescendants()) do
-            if v:IsA("Part") or v:IsA("CornerWedgePart") or v:IsA("TrussPart") or v:IsA("WedgePart") then
-                v.Material = Enum.Material.SmoothPlastic
-            elseif v:IsA("Decal") or v:IsA("Texture") then
-                v:Destroy()
-            end
+            if v:IsA("Part") or v:IsA("CornerWedgePart") then v.Material = Enum.Material.SmoothPlastic end
+            if v:IsA("Decal") or v:IsA("Texture") then v:Destroy() end
         end
         game:GetService("Lighting").GlobalShadows = false
-        game:GetService("Lighting").OutdoorAmbient = Color3.fromRGB(128, 128, 128)
     end)
 end
 
 -- 3. ANTI-AFK
 if antiAfk then
     local VirtualUser = game:GetService("VirtualUser")
-    client.Idled:Connect(function()
-        VirtualUser:CaptureController()
-        VirtualUser:ClickButton2(Vector2.new(0,0))
-    end)
+    client.Idled:Connect(function() VirtualUser:CaptureController(); VirtualUser:ClickButton2(Vector2.new(0,0)) end)
 end
 
 -- 4. GUI & PANEL
 local screenGui = Instance.new("ScreenGui", game:GetService("CoreGui"))
 screenGui.Name = "BABFT_UltimateTracker"
-screenGui.ResetOnSpawn = false
-
 local MainFrame = Instance.new("Frame", screenGui)
 MainFrame.Size = UDim2.new(0, 290, 0, 240); MainFrame.Position = UDim2.new(0.5, -145, 0.5, -120)
 MainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30); MainFrame.Active = true; MainFrame.Draggable = true
 
 local TitleBar = Instance.new("TextLabel", MainFrame)
 TitleBar.Size = UDim2.new(1, 0, 0, 40); TitleBar.BackgroundColor3 = Color3.fromRGB(230, 126, 34)
-TitleBar.Text = "AFK FARM MING"; TitleBar.TextColor3 = Color3.fromRGB(255, 255, 255); TitleBar.Font = Enum.Font.GothamBold; TitleBar.TextSize = 14
+TitleBar.Text = "AFK FARM MING"; TitleBar.TextColor3 = Color3.fromRGB(255, 255, 255); TitleBar.Font = Enum.Font.GothamBold
 
 local ScrollFrame = Instance.new("ScrollingFrame", MainFrame)
 ScrollFrame.Size = UDim2.new(1, -20, 1, -55); ScrollFrame.Position = UDim2.new(0, 10, 0, 50)
 ScrollFrame.BackgroundTransparency = 1; ScrollFrame.CanvasSize = UDim2.new(0, 0, 0, 200)
 
+local yPos = 0
 local function CreateLabel(text, color)
     local label = Instance.new("TextLabel", ScrollFrame)
-    label.Size = UDim2.new(1, -10, 0, 24); label.BackgroundTransparency = 1
-    label.Text = text; label.TextColor3 = color; label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Size = UDim2.new(1, 0, 0, 30); label.Position = UDim2.new(0, 0, 0, yPos); label.BackgroundTransparency = 1
+    label.Text = text; label.TextColor3 = color; label.TextXAlignment = Enum.TextXAlignment.Left; label.TextSize = 14
+    yPos = yPos + 30
     return label
 end
+local TimerLabel = CreateLabel("Session: 00:00:00", Color3.fromRGB(255, 255, 255))
+local GoldLabel = CreateLabel("Gold: 0", Color3.fromRGB(46, 204, 113))
 
-local TimerLabel = CreateLabel("Session Time: 00:00:00", Color3.fromRGB(255, 255, 255))
-local TotalGoldLabel = CreateLabel("Gold Earned: 💰 0", Color3.fromRGB(46, 204, 113))
-local TotalGoldBlockLabel = CreateLabel("Gold Block Earned: 🟥 0", Color3.fromRGB(241, 196, 15))
-local GPHLabel = CreateLabel("Gold / Hour: ⚡ Menghitung...", Color3.fromRGB(52, 152, 219))
-
--- 5. ENGINE & WEBHOOK (10 MENIT)
-local StartTime = os.time()
-local LiveTotalGold, LiveTotalBlocks = 0, 0
-
+-- 5. ENGINE UTAMA, TELEPORT & WEBHOOK
+local StartTime, totalGold = os.time(), 0
 task.spawn(function()
     while autoFarm do
-        task.wait(600) -- Kirim webhook setiap 10 menit
-        if webhookEnd and webhookUrl ~= "" then
-            local msg = string.format("username: %s\nEarning gold: 💰 %s\nEarning gold block: 🟥 %s", client.Name, tostring(LiveTotalGold), tostring(LiveTotalBlocks))
-            local request = syn and syn.request or http_request or request or http.request
-            if request then
-                request({Url = webhookUrl, Method = "POST", Headers = {["content-type"] = "application/json"}, Body = game:GetService("HttpService"):JSONEncode({["content"] = msg})})
-            end
+        task.wait(600) -- Webhook (Telepon) tiap 10 menit
+        if webhookUrl ~= "" then
+            local msg = {["content"] = "User: " .. client.Name .. " | Total Gold: " .. totalGold}
+            request({Url = webhookUrl, Method = "POST", Headers = {["content-type"] = "application/json"}, Body = game:GetService("HttpService"):JSONEncode(msg)})
         end
     end
 end)
@@ -99,48 +79,21 @@ task.spawn(function()
         task.wait(1)
         if client.Character and client.Character:FindFirstChild("HumanoidRootPart") then
             local elapsed = os.time() - StartTime
-            TimerLabel.Text = string.format("Session Time: %02d:%02d:%02d", math.floor(elapsed/3600), math.floor((elapsed%3600)/60), elapsed%60)
-            if LiveTotalGold > 0 and elapsed > 0 then
-                GPHLabel.Text = "Gold / Hour: ⚡ ~" .. math.floor((LiveTotalGold / elapsed) * 3600)
-            end
-        end
-    end
-end)
-
-task.spawn(function()
-    while autoFarm do
-        local platform = Instance.new("Part", workspace)
-        platform.Name = "SteelAnchorPlatform"; platform.Size = Vector3.new(35, 3, 35); platform.Anchored = true; platform.Transparency = 0.5
-        
-        for i = 1, 9 do
-            if not autoFarm then break end
+            TimerLabel.Text = string.format("Session: %02d:%02d:%02d", math.floor(elapsed/3600), math.floor((elapsed%3600)/60), elapsed%60)
             
-            if client.Character and client.Character:FindFirstChild("HumanoidRootPart") then
-                local stageName = "CaveStage"..i
-                if Stages:FindFirstChild(stageName) then
-                    local target = Stages[stageName].DarknessPart.CFrame
-                    platform.CFrame = target * CFrame.new(0, -4.5, 0)
-                    client.Character.HumanoidRootPart.CFrame = target
-                    
-                    local goldEvent = workspace:FindFirstChild("ClaimRiverResultsGold")
-                    if goldEvent then goldEvent:FireServer() end
-                    
-                    LiveTotalGold += goldStage
-                    TotalGoldLabel.Text = "Gold Earned: 💰 " .. LiveTotalGold
-                    
-                    if i == 9 then
-                        LiveTotalBlocks += goldBlock
-                        TotalGoldBlockLabel.Text = "Gold Block Earned: 🟥 " .. LiveTotalBlocks
-                    end
-                    task.wait(3)
+            -- TELEPORTASI KE STAGE 9
+            local stage9 = Stages:FindFirstChild("CaveStage9")
+            if stage9 and stage9:FindFirstChild("DarknessPart") then
+                client.Character.HumanoidRootPart.CFrame = stage9.DarknessPart.CFrame
+                
+                -- KLAIM GOLD
+                local goldEvent = workspace:FindFirstChild("ClaimRiverResultsGold")
+                if goldEvent then 
+                    goldEvent:FireServer(); 
+                    totalGold = totalGold + 16; 
+                    GoldLabel.Text = "Gold: " .. totalGold 
                 end
-            else
-                task.wait(1)
             end
         end
-        platform:Destroy()
-        if Penguin then Penguin:FireServer("PenguinCharacter") end
-        task.wait(2)
     end
 end)
-
