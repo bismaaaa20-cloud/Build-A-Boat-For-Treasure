@@ -1,58 +1,262 @@
--- CHEST FINDER - PETI AKHIR + COPY
+-- AFK FARM MING - KAITUN EDITION + TAB GRAFIK
+
+local env = (getgenv and getgenv()) or _G
+
+-- ================= CONFIG (EDIT DI SINI) =================
+env.Config = {
+    ["Setting_Farm"] = {
+        ["Auto_Farm"] = true,
+        ["FPS_Boost"] = true,
+        ["Gold_Block_Per_Round"] = 1
+    },
+    -- Jeda tiap stage (detik): 1-2 = 5, 3-7 = 3, 8-9 = 3.5
+    ["Stage_Waits"] = {5, 5, 3, 3, 3, 3, 3, 3.5, 3.5},
+    ["Anti_AFK"] = { ["Enable"] = true },
+    ["Chest"] = { ["Enable"] = false, ["FindTimeout"] = 5 },
+    ["UI"] = {
+        ["Overlay"] = true,         -- layar penuh gaya kaitun
+        ["Black_Screen"] = false,   -- matikan render 3D (hemat baterai)
+        ["Hide_Username"] = false   -- sembunyikan nama di layar dan webhook
+    },
+    ["Chart"] = {
+        ["Interval"] = 30,          -- satu titik grafik tiap N detik
+        ["Points"] = 30             -- jumlah titik yang ditampilkan
+    },
+    ["Webhook"] = {
+        ["UrlWebhook"] = "",        -- isi: https://discord.com/api/webhooks/...
+        ["Enable"] = true,
+        ["Webhook_Every"] = 5,      -- kirim laporan tiap N ronde
+        ["Send_On_Start"] = true
+    }
+}
+-- =========================================================
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
+local Lighting = game:GetService("Lighting")
 local CoreGui = game:GetService("CoreGui")
+local HttpService = game:GetService("HttpService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+
 local client = Players.LocalPlayer
+local StartTime = os.time()
+local LiveTotalGold, LiveBlockGain, LiveTotalBlocks = 0, 0, 0
+local ChestTouches = 0
+local LastGain, LastBlockGain = 0, 0
+local RoundGainSum, RoundsMeasured = 0, 0
 
-local cfg = {
-    Interval = 8,
-    Keywords = {"theend", "goldenchest", "treasure", "chest"},
-    Exclude = {"buy", "purchase", "shop", "robux", "gamepass", "product"}
-}
+local function fill(target, defaults)
+    for k, v in pairs(defaults) do
+        if target[k] == nil then
+            target[k] = (type(v) == "table") and fill({}, v) or v
+        elseif type(v) == "table" and type(target[k]) == "table" then
+            fill(target[k], v)
+        end
+    end
+    return target
+end
 
-local Targets, Current, log = {}, 1, {}
-local capture, hooked, dirty = false, false, true
-_G.Busy = false
+local cfg = fill(env.Config, {
+    ["Setting_Farm"] = { ["Auto_Farm"] = true, ["FPS_Boost"] = true, ["Gold_Block_Per_Round"] = 1 },
+    ["Stage_Waits"] = {5, 5, 3, 3, 3, 3, 3, 3.5, 3.5},
+    ["Anti_AFK"] = { ["Enable"] = true },
+    ["Chest"] = { ["Enable"] = false, ["FindTimeout"] = 5 },
+    ["UI"] = { ["Overlay"] = true, ["Black_Screen"] = false, ["Hide_Username"] = false },
+    ["Chart"] = { ["Interval"] = 30, ["Points"] = 30 },
+    ["Webhook"] = { ["UrlWebhook"] = "", ["Enable"] = true, ["Webhook_Every"] = 5, ["Send_On_Start"] = true }
+})
 
+local StageWaits = cfg["Stage_Waits"]
+local DefaultWait = 3
+local MaxStageScan = 20
+local ChartInterval = math.max(5, cfg["Chart"]["Interval"])
+local MaxPoints = math.max(5, cfg["Chart"]["Points"])
+local DisplayName = cfg["UI"]["Hide_Username"] and "Hidden" or client.Name
+
+env.Busy = cfg["Setting_Farm"]["Auto_Farm"]
+
+-- Hentikan instance lama kalau script dijalankan ulang
+local token = {}
+env.AFKFarmToken = token
+local function alive() return env.AFKFarmToken == token end
+
+-- ================= OBJEK GAME =================
+local BoatStages = Workspace:WaitForChild("BoatStages", 10)
+local Stages = BoatStages and BoatStages:WaitForChild("NormalStages", 10)
+local Penguin = Workspace:WaitForChild("ChangeCharacter", 10)
+local ClaimRemote = Workspace:FindFirstChild("ClaimRiverResultsGold")
+
+if not Stages then
+    warn("[AFK Farm Ming] BoatStages.NormalStages tidak ditemukan.")
+    return
+end
+
+local StartNote = nil
+if not ClaimRemote then
+    for _, root in ipairs({Workspace, ReplicatedStorage}) do
+        for _, v in ipairs(root:GetDescendants()) do
+            if v:IsA("RemoteEvent") or v:IsA("RemoteFunction") then
+                local n = v.Name:lower()
+                if n:find("claim") and (n:find("gold") or n:find("river")) then
+                    ClaimRemote = v
+                    StartNote = "Remote pengganti: " .. v.Name
+                    break
+                end
+            end
+        end
+        if ClaimRemote then break end
+    end
+end
+if not ClaimRemote then
+    StartNote = "Remote claim tidak ditemukan!"
+    warn("[AFK Farm Ming] " .. StartNote)
+end
+
+-- ================= DATA GOLD ASLI =================
+local GoldObj, BlockObj
+local lastG, lastB
+
+local function findValue(name)
+    for _, v in ipairs(client:GetDescendants()) do
+        if v.Name == name and (v:IsA("IntValue") or v:IsA("NumberValue")) then
+            return v
+        end
+    end
+end
+
+local function bindStats()
+    if not (GoldObj and GoldObj.Parent) then
+        GoldObj = findValue("Gold")
+        lastG = GoldObj and GoldObj.Value
+    end
+    if not (BlockObj and BlockObj.Parent) then
+        BlockObj = findValue("GoldBlock")
+        lastB = BlockObj and BlockObj.Value
+    end
+end
+bindStats()
+
+local function fmt(n)
+    local s = tostring(math.floor(n + 0.5))
+    local out = s:reverse():gsub("(%d%d%d)", "%1,"):reverse()
+    if out:sub(1, 1) == "," then out = out:sub(2) end
+    return out
+end
+
+local function timeText()
+    local e = os.time() - StartTime
+    return string.format("%02d:%02d:%02d", math.floor(e / 3600), math.floor((e % 3600) / 60), e % 60)
+end
+
+local function perHour()
+    local e = os.time() - StartTime
+    return e > 0 and LiveTotalGold / (e / 3600) or 0
+end
+
+local function avgRound()
+    return RoundsMeasured > 0 and RoundGainSum / RoundsMeasured or 0
+end
+
+-- ================= FPS =================
+local fps = 0
+do
+    local frames, t0 = 0, os.clock()
+    RunService.Heartbeat:Connect(function()
+        if not alive() then return end
+        frames = frames + 1
+        local now = os.clock()
+        if now - t0 >= 1 then
+            fps = math.floor(frames / (now - t0) + 0.5)
+            frames, t0 = 0, now
+        end
+    end)
+end
+
+-- ================= WEBHOOK =================
+local httpRequest = request or http_request or (syn and syn.request) or (http and http.request)
+local lastSend = 0
+local avatarUrl = nil
+
+task.spawn(function()
+    if not httpRequest then return end
+    local ok, res = pcall(httpRequest, {
+        Url = "https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=" .. client.UserId .. "&size=150x150&format=Png",
+        Method = "GET"
+    })
+    if ok and type(res) == "table" and res.Body then
+        local ok2, data = pcall(HttpService.JSONDecode, HttpService, res.Body)
+        if ok2 and data and data.data and data.data[1] then
+            avatarUrl = data.data[1].imageUrl
+        end
+    end
+end)
+
+local ReasonColor = { ["Mulai"] = 3447003, ["Update"] = 5763719, ["Berhenti"] = 15548997 }
+
+local function SendWebhookLog(reason, statusText)
+    local w = cfg["Webhook"]
+    local url = w["UrlWebhook"]
+    if not w["Enable"] or url == "" then return end
+    if not httpRequest then warn("[Webhook] executor tidak punya fungsi request") return end
+    if not (url:find("discord.com/api/webhooks/", 1, true) or url:find("discordapp.com/api/webhooks/", 1, true)) then
+        warn("[Webhook] URL tidak valid")
+        return
+    end
+    if reason == "Update" and os.clock() - lastSend < 5 then return end
+    lastSend = os.clock()
+
+    local embed = {
+        title = "AFK Farm Ming  |  " .. tostring(reason),
+        description = "**" .. DisplayName .. "**\nStatus: `" .. tostring(statusText or "-") .. "`",
+        color = ReasonColor[reason] or 15105570,
+        fields = {
+            {name = "Gold", value = "`" .. (GoldObj and fmt(GoldObj.Value) or "-") .. "`", inline = true},
+            {name = "Gold Naik", value = "`+" .. fmt(LiveTotalGold) .. "`", inline = true},
+            {name = "Ronde Terakhir", value = "`+" .. fmt(LastGain) .. "`", inline = true},
+            {name = "Gold Block", value = "`" .. (BlockObj and fmt(BlockObj.Value) or "-") .. "`", inline = true},
+            {name = "Block Naik", value = "`+" .. fmt(LiveBlockGain) .. "`", inline = true},
+            {name = "Rounds", value = "`" .. LiveTotalBlocks .. "`", inline = true},
+            {name = "Gold/Jam", value = "`" .. fmt(perHour()) .. "`", inline = true},
+            {name = "Rata-rata/Ronde", value = "`" .. fmt(avgRound()) .. "`", inline = true},
+            {name = "Waktu", value = "`" .. timeText() .. "`", inline = true},
+        },
+        footer = {text = "AFK Farm Ming  |  Kaitun"},
+        timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
+    }
+    if avatarUrl and not cfg["UI"]["Hide_Username"] then
+        embed.thumbnail = {url = avatarUrl}
+    end
+
+    local body = HttpService:JSONEncode({username = "AFK Farm Ming", embeds = {embed}})
+
+    task.spawn(function()
+        local ok, res = pcall(httpRequest, {
+            Url = url,
+            Method = "POST",
+            Headers = {["Content-Type"] = "application/json"},
+            Body = body
+        })
+        if not ok then
+            warn("[Webhook] " .. tostring(res))
+        elseif type(res) == "table" and res.StatusCode and res.StatusCode >= 400 then
+            warn("[Webhook] gagal, kode " .. res.StatusCode)
+        end
+    end)
+end
+
+-- ================= GUI =================
 local function getGuiParent()
     local ok, ui = pcall(function() return gethui and gethui() end)
     if ok and ui then return ui end
     if pcall(function() return CoreGui.Name end) then return CoreGui end
     return client:WaitForChild("PlayerGui")
 end
-
-local function getRoot()
-    local char = client.Character or client.CharacterAdded:Wait()
-    return char:WaitForChild("HumanoidRootPart", 10)
-end
-
-local function chain(inst)
-    local t, cur = {}, inst
-    for _ = 1, 4 do
-        if not cur or cur == Workspace then break end
-        table.insert(t, cur.Name)
-        cur = cur.Parent
-    end
-    return table.concat(t, " "):lower()
-end
-
-local function hasAny(s, list)
-    for _, w in ipairs(list) do
-        if s:find(w, 1, true) then return true end
-    end
-    return false
-end
-
-local function addLog(text)
-    table.insert(log, text)
-    if #log > 150 then table.remove(log, 1) end
-    dirty = true
-end
-
--- GUI
 local GuiParent = getGuiParent()
-if GuiParent:FindFirstChild("ChestFinder") then GuiParent.ChestFinder:Destroy() end
+
+if GuiParent:FindFirstChild("BABFT_UltimateTracker") then
+    GuiParent.BABFT_UltimateTracker:Destroy()
+end
 
 local function mk(class, props, parent)
     local o = Instance.new(class)
@@ -61,186 +265,471 @@ local function mk(class, props, parent)
     return o
 end
 
-local gui = mk("ScreenGui", {Name = "ChestFinder", ResetOnSpawn = false}, GuiParent)
-local Main = mk("Frame", {Size = UDim2.new(0, 330, 0, 400), Position = UDim2.new(0.5, -165, 0.5, -200),
-    BackgroundColor3 = Color3.fromRGB(30, 30, 30), Active = true, Draggable = true}, gui)
-mk("TextLabel", {Size = UDim2.new(1, 0, 0, 34), BackgroundColor3 = Color3.fromRGB(230, 126, 34),
-    Text = "CHEST FINDER", TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.GothamBold, TextSize = 16}, Main)
-local Status = mk("TextLabel", {Size = UDim2.new(1, -20, 0, 34), Position = UDim2.new(0, 10, 0, 38),
-    BackgroundTransparency = 1, Text = "Tekan SCAN", TextColor3 = Color3.fromRGB(200, 200, 200),
-    Font = Enum.Font.Gotham, TextSize = 12, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left}, Main)
+local C = {
+    bg = Color3.fromRGB(10, 10, 14), card = Color3.fromRGB(22, 22, 30), tile = Color3.fromRGB(32, 32, 44),
+    accent = Color3.fromRGB(230, 126, 34), green = Color3.fromRGB(51, 204, 102),
+    yellow = Color3.fromRGB(240, 200, 80), gray = Color3.fromRGB(150, 150, 165),
+    red = Color3.fromRGB(192, 57, 43), blue = Color3.fromRGB(41, 128, 185), white = Color3.new(1, 1, 1)
+}
 
-local function btn(text, x, color)
-    return mk("TextButton", {Size = UDim2.new(0, 58, 0, 30), Position = UDim2.new(0, x, 0, 76),
-        BackgroundColor3 = color, Text = text, TextColor3 = Color3.new(1, 1, 1),
-        Font = Enum.Font.GothamBold, TextSize = 11}, Main)
-end
-local ScanBtn = btn("SCAN", 10, Color3.fromRGB(41, 128, 185))
-local NextBtn = btn("NEXT", 74, Color3.fromRGB(127, 140, 141))
-local TestBtn = btn("TEST", 138, Color3.fromRGB(142, 68, 173))
-local AutoBtn = btn("AUTO", 202, Color3.fromRGB(39, 174, 96))
-local CopyBtn = btn("COPY", 266, Color3.fromRGB(211, 84, 0))
+local screenGui = mk("ScreenGui", {Name = "BABFT_UltimateTracker", ResetOnSpawn = false, IgnoreGuiInset = true,
+    ZIndexBehavior = Enum.ZIndexBehavior.Sibling}, GuiParent)
 
-local Scroll = mk("ScrollingFrame", {Size = UDim2.new(1, -20, 1, -118), Position = UDim2.new(0, 10, 0, 110),
-    BackgroundColor3 = Color3.fromRGB(20, 20, 20), BorderSizePixel = 0, ScrollBarThickness = 6,
-    CanvasSize = UDim2.new(0, 0, 0, 0), AutomaticCanvasSize = Enum.AutomaticSize.Y}, Main)
-local Box = mk("TextBox", {Size = UDim2.new(1, -8, 0, 20), AutomaticSize = Enum.AutomaticSize.Y,
-    BackgroundTransparency = 1, Text = "", TextColor3 = Color3.fromRGB(230, 230, 230), Font = Enum.Font.Code,
-    TextSize = 12, TextWrapped = true, MultiLine = true, ClearTextOnFocus = false,
-    TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top}, Scroll)
+local Backdrop = mk("Frame", {Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = C.bg, BorderSizePixel = 0,
+    Active = true, Visible = cfg["UI"]["Overlay"]}, screenGui)
 
-local function setStatus(t) Status.Text = t end
+local Card = mk("Frame", {AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0),
+    Size = UDim2.new(0.92, 0, 0.92, 0), BackgroundColor3 = C.card, BorderSizePixel = 0}, Backdrop)
+mk("UICorner", {CornerRadius = UDim.new(0, 12)}, Card)
+mk("UISizeConstraint", {MaxSize = Vector2.new(460, 360)}, Card)
+mk("UIStroke", {Color = C.accent, Thickness = 1.5}, Card)
 
-local function render()
-    local lines = {"== KANDIDAT PETI (>> = terpilih) =="}
-    for i, t in ipairs(Targets) do
-        table.insert(lines, (i == Current and ">> " or "   ") .. i .. ". [" .. t.kind .. "] " .. t.inst:GetFullName())
-    end
-    table.insert(lines, "")
-    table.insert(lines, "== LOG REMOTE SAAT TEST ==")
-    for _, l in ipairs(log) do table.insert(lines, l) end
-    Box.Text = table.concat(lines, "\n")
-end
+-- Header
+local Avatar = mk("ImageLabel", {Size = UDim2.new(0, 44, 0, 44), Position = UDim2.new(0, 12, 0, 8),
+    BackgroundColor3 = C.tile, BorderSizePixel = 0,
+    Image = cfg["UI"]["Hide_Username"] and "" or ("rbxthumb://type=AvatarHeadShot&id=" .. client.UserId .. "&w=150&h=150")}, Card)
+mk("UICorner", {CornerRadius = UDim.new(1, 0)}, Avatar)
 
--- SCAN peti
-local function Scan()
-    setStatus("Memindai...")
-    table.clear(Targets)
-    local root = Workspace:FindFirstChild("BoatStages") or Workspace
-    local seen, n = {}, 0
-    for _, v in ipairs(root:GetDescendants()) do
-        n = n + 1
-        if n % 1000 == 0 then task.wait() end
-        local kind
-        if v:IsA("TouchTransmitter") then kind = "touch"
-        elseif v:IsA("ProximityPrompt") then kind = "prompt"
-        elseif v:IsA("ClickDetector") then kind = "click" end
-        if kind then
-            local part = v.Parent
-            if part and part:IsA("Attachment") then part = part.Parent end
-            local c = part and chain(part) or ""
-            if part and part:IsA("BasePart") and not seen[part .. kind]
-                and hasAny(c, cfg.Keywords) and not hasAny(c, cfg.Exclude)
-                and not (part.Parent and part.Parent:FindFirstChildOfClass("Humanoid")) then
-                seen[part .. kind] = true
-                table.insert(Targets, {kind = kind, inst = v, part = part,
-                    prio = c:find("theend", 1, true) and 2 or (c:find("goldenchest", 1, true) and 1 or 0)})
-            end
-        end
-    end
-    table.sort(Targets, function(a, b) return a.prio > b.prio end)
-    Current = 1
-    setStatus(#Targets == 0 and "Peti tidak ditemukan. Dekati peti dulu lalu SCAN lagi."
-        or (#Targets .. " kandidat. Teratas dipilih."))
-    dirty = true
+mk("TextLabel", {Size = UDim2.new(1, -72, 0, 24), Position = UDim2.new(0, 64, 0, 8), BackgroundTransparency = 1,
+    Text = "AFK FARM MING", TextColor3 = C.accent, Font = Enum.Font.GothamBold, TextSize = 18,
+    TextXAlignment = Enum.TextXAlignment.Left}, Card)
+mk("TextLabel", {Size = UDim2.new(1, -72, 0, 18), Position = UDim2.new(0, 64, 0, 33), BackgroundTransparency = 1,
+    Text = DisplayName .. "  |  Kaitun Mode", TextColor3 = C.gray, Font = Enum.Font.Gotham, TextSize = 12,
+    TextXAlignment = Enum.TextXAlignment.Left}, Card)
+
+local StatusLabel = mk("TextLabel", {Size = UDim2.new(1, -24, 0, 24), Position = UDim2.new(0, 12, 0, 60),
+    BackgroundColor3 = C.tile, Text = StartNote or "Status: Memulai...", TextColor3 = C.white,
+    Font = Enum.Font.GothamMedium, TextSize = 13, BorderSizePixel = 0}, Card)
+mk("UICorner", {CornerRadius = UDim.new(0, 6)}, StatusLabel)
+
+-- ===== Tab STATS =====
+local Grid = mk("ScrollingFrame", {Size = UDim2.new(1, -24, 1, -178), Position = UDim2.new(0, 12, 0, 124),
+    BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 3, CanvasSize = UDim2.new(0, 0, 0, 0),
+    AutomaticCanvasSize = Enum.AutomaticSize.Y}, Card)
+mk("UIGridLayout", {CellSize = UDim2.new(0.5, -4, 0, 50), CellPadding = UDim2.new(0, 8, 0, 8),
+    SortOrder = Enum.SortOrder.LayoutOrder}, Grid)
+
+local order = 0
+local function tile(caption, color)
+    order = order + 1
+    local t = mk("Frame", {BackgroundColor3 = C.tile, BorderSizePixel = 0, LayoutOrder = order}, Grid)
+    mk("UICorner", {CornerRadius = UDim.new(0, 8)}, t)
+    mk("TextLabel", {Size = UDim2.new(1, -16, 0, 14), Position = UDim2.new(0, 8, 0, 4), BackgroundTransparency = 1,
+        Text = caption, TextColor3 = C.gray, Font = Enum.Font.Gotham, TextSize = 11,
+        TextXAlignment = Enum.TextXAlignment.Left}, t)
+    return mk("TextLabel", {Size = UDim2.new(1, -16, 0, 26), Position = UDim2.new(0, 8, 0, 20), BackgroundTransparency = 1,
+        Text = "-", TextColor3 = color, Font = Enum.Font.GothamBold, TextSize = 17, TextTruncate = Enum.TextTruncate.AtEnd,
+        TextXAlignment = Enum.TextXAlignment.Left}, t)
 end
 
--- Spy ringan (hanya saat TEST/AUTO)
-local function startHook()
-    if hooked then return end
-    if not (hookmetamethod and getnamecallmethod) then
-        addLog("Executor tidak punya hookmetamethod, log remote tidak aktif.")
+local vGold = tile("GOLD", C.white)
+local vGoldGain = tile("GOLD NAIK", C.green)
+local vBlock = tile("GOLD BLOCK", C.white)
+local vBlockGain = tile("BLOCK NAIK", C.green)
+local vLast = tile("RONDE TERAKHIR", C.green)
+local vAvg = tile("RATA-RATA / RONDE", C.yellow)
+local vRate = tile("GOLD / JAM", C.yellow)
+local vRounds = tile("ROUNDS", C.white)
+local vTime = tile("WAKTU", C.white)
+local vFps = tile("FPS", C.gray)
+
+-- ===== Tab GRAFIK =====
+local ChartPage = mk("Frame", {Size = UDim2.new(1, -24, 1, -178), Position = UDim2.new(0, 12, 0, 124),
+    BackgroundTransparency = 1, Visible = false}, Card)
+mk("UIListLayout", {FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 8)}, ChartPage)
+
+local function segment(parent, x1, y1, x2, y2, color)
+    local dx, dy = x2 - x1, y2 - y1
+    local len = math.sqrt(dx * dx + dy * dy)
+    mk("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Size = UDim2.new(0, len, 0, 2),
+        Position = UDim2.new(0, (x1 + x2) / 2, 0, (y1 + y2) / 2),
+        Rotation = math.deg(math.atan2(dy, dx)),
+        BackgroundColor3 = color,
+        BorderSizePixel = 0
+    }, parent)
+end
+
+local function dot(parent, x, y, color, size)
+    local d = mk("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Size = UDim2.new(0, size, 0, size),
+        Position = UDim2.new(0, x, 0, y),
+        BackgroundColor3 = color,
+        BorderSizePixel = 0
+    }, parent)
+    mk("UICorner", {CornerRadius = UDim.new(1, 0)}, d)
+end
+
+local function redraw(chart)
+    local size = chart.plot.AbsoluteSize
+    if size.X < 20 or size.Y < 20 then return end
+    chart.lines:ClearAllChildren()
+
+    local data = chart.data
+    local n = #data
+    if n == 0 then
+        chart.info.Text = "Menunggu data..."
         return
     end
-    local old
-    old = hookmetamethod(game, "__namecall", (newcclosure or function(f) return f end)(function(self, ...)
-        local m = getnamecallmethod()
-        if capture and (m == "FireServer" or m == "InvokeServer")
-            and not (checkcaller and checkcaller()) and typeof(self) == "Instance" then
-            local a = table.pack(...)
-            local parts = {}
-            for i = 1, a.n do parts[i] = tostring(a[i]):sub(1, 40) end
-            local line = "[" .. m .. "] " .. self:GetFullName() .. "(" .. table.concat(parts, ", ") .. ")"
-            task.spawn(addLog, line)
+
+    local maxV = 1
+    for _, v in ipairs(data) do
+        if v > maxV then maxV = v end
+    end
+    chart.info.Text = "Terakhir +" .. fmt(data[n]) .. "  Maks +" .. fmt(maxV)
+
+    local pad = 8
+    local w, h = size.X - pad * 2, size.Y - pad * 2
+    local prevX, prevY
+    for i = 1, n do
+        local x = pad + ((i - 1) / math.max(1, MaxPoints - 1)) * w
+        local y = pad + h - (data[i] / maxV) * h
+        if prevX then segment(chart.lines, prevX, prevY, x, y, chart.color) end
+        dot(chart.lines, x, y, chart.color, i == n and 8 or 5)
+        prevX, prevY = x, y
+    end
+end
+
+local function makeChart(title, color)
+    local f = mk("Frame", {Size = UDim2.new(0.5, -4, 1, 0), BackgroundColor3 = C.tile, BorderSizePixel = 0}, ChartPage)
+    mk("UICorner", {CornerRadius = UDim.new(0, 8)}, f)
+    mk("TextLabel", {Size = UDim2.new(1, -16, 0, 14), Position = UDim2.new(0, 8, 0, 4), BackgroundTransparency = 1,
+        Text = title, TextColor3 = color, Font = Enum.Font.GothamBold, TextSize = 12,
+        TextXAlignment = Enum.TextXAlignment.Left}, f)
+    local info = mk("TextLabel", {Size = UDim2.new(1, -16, 0, 12), Position = UDim2.new(0, 8, 0, 19),
+        BackgroundTransparency = 1, Text = "Menunggu data...", TextColor3 = C.gray, Font = Enum.Font.Gotham,
+        TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd}, f)
+    local plot = mk("Frame", {Size = UDim2.new(1, -16, 1, -52), Position = UDim2.new(0, 8, 0, 34),
+        BackgroundColor3 = Color3.fromRGB(16, 16, 22), BorderSizePixel = 0, ClipsDescendants = true}, f)
+    mk("UICorner", {CornerRadius = UDim.new(0, 6)}, plot)
+    for _, yy in ipairs({0.25, 0.5, 0.75}) do
+        mk("Frame", {Size = UDim2.new(1, 0, 0, 1), Position = UDim2.new(0, 0, yy, 0), BackgroundColor3 = C.white,
+            BackgroundTransparency = 0.92, BorderSizePixel = 0}, plot)
+    end
+    local lines = mk("Frame", {Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, BorderSizePixel = 0}, plot)
+    mk("TextLabel", {Size = UDim2.new(1, -16, 0, 12), Position = UDim2.new(0, 8, 1, -16), BackgroundTransparency = 1,
+        Text = "per " .. ChartInterval .. " detik", TextColor3 = C.gray, Font = Enum.Font.Gotham, TextSize = 10,
+        TextXAlignment = Enum.TextXAlignment.Left}, f)
+
+    local chart = {plot = plot, lines = lines, info = info, color = color, data = {}}
+    plot:GetPropertyChangedSignal("AbsoluteSize"):Connect(function() redraw(chart) end)
+    return chart
+end
+
+local GoldChart = makeChart("GOLD", C.green)
+local BlockChart = makeChart("GOLD BLOCK", C.yellow)
+
+-- ===== Tab bar =====
+local TabBar = mk("Frame", {Size = UDim2.new(1, -24, 0, 28), Position = UDim2.new(0, 12, 0, 90), BackgroundTransparency = 1}, Card)
+mk("UIListLayout", {FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 8)}, TabBar)
+
+local function tabButton(text)
+    local b = mk("TextButton", {Size = UDim2.new(0.5, -4, 1, 0), BackgroundColor3 = C.tile, Text = text,
+        TextColor3 = C.white, Font = Enum.Font.GothamBold, TextSize = 13, BorderSizePixel = 0}, TabBar)
+    mk("UICorner", {CornerRadius = UDim.new(0, 8)}, b)
+    return b
+end
+local TabStats = tabButton("STATS")
+local TabChart = tabButton("GRAFIK")
+
+local function setTab(name)
+    Grid.Visible = (name == "stats")
+    ChartPage.Visible = (name == "chart")
+    TabStats.BackgroundColor3 = (name == "stats") and C.accent or C.tile
+    TabChart.BackgroundColor3 = (name == "chart") and C.accent or C.tile
+    if name == "chart" then
+        task.defer(function()
+            redraw(GoldChart)
+            redraw(BlockChart)
+        end)
+    end
+end
+TabStats.MouseButton1Click:Connect(function() setTab("stats") end)
+TabChart.MouseButton1Click:Connect(function() setTab("chart") end)
+setTab("stats")
+
+-- ===== Tombol bawah =====
+local Bar = mk("Frame", {Size = UDim2.new(1, -24, 0, 38), Position = UDim2.new(0, 12, 1, -46), BackgroundTransparency = 1}, Card)
+mk("UIListLayout", {FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 8)}, Bar)
+
+local function button(text, color)
+    local b = mk("TextButton", {Size = UDim2.new(1 / 3, -6, 1, 0), BackgroundColor3 = color, Text = text,
+        TextColor3 = C.white, Font = Enum.Font.GothamBold, TextSize = 14, BorderSizePixel = 0, AutoButtonColor = true}, Bar)
+    mk("UICorner", {CornerRadius = UDim.new(0, 8)}, b)
+    return b
+end
+
+local ToggleBtn = button("STOP", C.red)
+local Btn3D = button("3D: ON", C.blue)
+local HideBtn = button("HIDE", C.tile)
+
+local Float = mk("TextButton", {Size = UDim2.new(0, 84, 0, 30), Position = UDim2.new(0, 70, 0, 6),
+    BackgroundColor3 = C.accent, Text = "KAITUN", TextColor3 = C.white, Font = Enum.Font.GothamBold, TextSize = 13,
+    BorderSizePixel = 0, Visible = not cfg["UI"]["Overlay"]}, screenGui)
+mk("UICorner", {CornerRadius = UDim.new(0, 8)}, Float)
+
+local function setOverlay(on)
+    Backdrop.Visible = on
+    Float.Visible = not on
+end
+HideBtn.MouseButton1Click:Connect(function() setOverlay(false) end)
+Float.MouseButton1Click:Connect(function() setOverlay(true) end)
+
+local function refreshToggle()
+    if env.Busy then
+        ToggleBtn.Text, ToggleBtn.BackgroundColor3 = "STOP", C.red
+    else
+        ToggleBtn.Text, ToggleBtn.BackgroundColor3 = "START", C.green
+    end
+end
+refreshToggle()
+
+ToggleBtn.MouseButton1Click:Connect(function()
+    env.Busy = not env.Busy
+    refreshToggle()
+    if not env.Busy then SendWebhookLog("Berhenti", StatusLabel.Text) end
+end)
+
+local render3d = not cfg["UI"]["Black_Screen"]
+local function apply3d()
+    pcall(function() RunService:Set3dRenderingEnabled(render3d) end)
+    Btn3D.Text = render3d and "3D: ON" or "3D: OFF"
+    Btn3D.BackgroundColor3 = render3d and C.blue or C.accent
+end
+apply3d()
+Btn3D.MouseButton1Click:Connect(function()
+    render3d = not render3d
+    apply3d()
+end)
+
+screenGui.Destroying:Connect(function()
+    pcall(function() RunService:Set3dRenderingEnabled(true) end)
+end)
+
+-- ================= FPS BOOST =================
+if cfg["Setting_Farm"]["FPS_Boost"] then
+    task.spawn(function()
+        local count = 0
+        for _, v in ipairs(Workspace:GetDescendants()) do
+            if v:IsA("BasePart") and not v:IsA("Terrain") then
+                v.Material = Enum.Material.SmoothPlastic
+            elseif v:IsA("Decal") or v:IsA("Texture") then
+                v:Destroy()
+            end
+            count = count + 1
+            if count % 500 == 0 then task.wait() end
         end
-        return old(self, ...)
-    end))
-    hooked = true
+        Lighting.GlobalShadows = false
+        Lighting.OutdoorAmbient = Color3.fromRGB(128, 128, 128)
+    end)
 end
 
--- Interaksi
-local function interact(t)
-    if not t.inst or not t.inst.Parent then return false, "objek hilang, SCAN ulang" end
-    local root = getRoot()
-    if not root then return false, "karakter belum siap" end
-
-    local plat = Instance.new("Part")
-    plat.Name = "SteelAnchorPlatform"
-    plat.Size = Vector3.new(40, 3, 40)
-    plat.Anchored = true
-    plat.Transparency = 0.3
-    plat.BrickColor = BrickColor.new("Bright blue")
-    plat.Material = Enum.Material.DiamondPlate
-    plat.CFrame = t.part.CFrame * CFrame.new(0, -4.5, 0)
-    plat.Parent = Workspace
-    root.CFrame = t.part.CFrame * CFrame.new(0, 4, 0)
-    task.wait(0.4)
-
-    capture = true
-    local ok, why = true, nil
-    if t.kind == "touch" then
-        if firetouchinterest then
-            firetouchinterest(root, t.part, 0)
-            task.wait(0.15)
-            firetouchinterest(root, t.part, 1)
-        else ok, why = false, "tidak ada firetouchinterest" end
-    elseif t.kind == "prompt" then
-        if fireproximityprompt then fireproximityprompt(t.inst) else ok, why = false, "tidak ada fireproximityprompt" end
-    else
-        if fireclickdetector then fireclickdetector(t.inst) else ok, why = false, "tidak ada fireclickdetector" end
-    end
-    task.wait(1.2)
-    capture = false
-    plat:Destroy()
-    return ok, why
+-- ================= ANTI-AFK =================
+if cfg["Anti_AFK"]["Enable"] then
+    local VirtualUser = game:GetService("VirtualUser")
+    client.Idled:Connect(function()
+        if not alive() then return end
+        VirtualUser:CaptureController()
+        VirtualUser:ClickButton2(Vector2.new(0, 0))
+    end)
 end
 
-local function runOnce()
-    local t = Targets[Current]
-    if not t then setStatus("Belum ada target, SCAN dulu.") return end
-    startHook()
-    local ok, res, why = pcall(interact, t)
-    if not ok then setStatus("Error: " .. tostring(res))
-    elseif res then setStatus("Selesai menyentuh. Cek gold dan log di bawah.")
-    else setStatus("Gagal: " .. tostring(why)) end
-end
-
--- Tombol
-ScanBtn.MouseButton1Click:Connect(function() task.spawn(Scan) end)
-NextBtn.MouseButton1Click:Connect(function()
-    if #Targets > 0 then Current = Current % #Targets + 1 dirty = true end
-end)
-TestBtn.MouseButton1Click:Connect(function() task.spawn(runOnce) end)
-AutoBtn.MouseButton1Click:Connect(function()
-    _G.Busy = not _G.Busy
-    AutoBtn.Text = _G.Busy and "STOP" or "AUTO"
-    AutoBtn.BackgroundColor3 = _G.Busy and Color3.fromRGB(192, 57, 43) or Color3.fromRGB(39, 174, 96)
-end)
-CopyBtn.MouseButton1Click:Connect(function()
-    local fn = setclipboard or toclipboard
-    if fn and pcall(fn, Box.Text) then
-        setStatus("Tersalin ke clipboard.")
-    else
-        Box:CaptureFocus()
-        setStatus("Tidak ada clipboard. Tekan lama di kotak, Select All, Copy.")
-    end
-end)
-
--- Loop
+-- ================= TRACKER =================
 task.spawn(function()
-    while gui.Parent do
-        if dirty then dirty = false render() end
-        if _G.Busy and Targets[Current] then
-            runOnce()
-            task.wait(cfg.Interval)
+    while screenGui.Parent and alive() do
+        bindStats()
+        refreshToggle()
+
+        if GoldObj then
+            local v = GoldObj.Value
+            if lastG and v > lastG then LiveTotalGold = LiveTotalGold + (v - lastG) end
+            lastG = v
+            vGold.Text = fmt(v)
         else
-            task.wait(0.5)
+            vGold.Text = "N/A"
+        end
+
+        if BlockObj then
+            local b = BlockObj.Value
+            if lastB and b > lastB then LiveBlockGain = LiveBlockGain + (b - lastB) end
+            lastB = b
+            vBlock.Text = fmt(b)
+        else
+            vBlock.Text = "N/A"
+        end
+
+        vGoldGain.Text = "+" .. fmt(LiveTotalGold)
+        vBlockGain.Text = "+" .. fmt(LiveBlockGain)
+        vLast.Text = "+" .. fmt(LastGain)
+        vAvg.Text = fmt(avgRound())
+        vRate.Text = fmt(perHour())
+        vRounds.Text = tostring(LiveTotalBlocks)
+        vTime.Text = timeText()
+        vFps.Text = tostring(fps)
+
+        task.wait(0.3)
+    end
+end)
+
+-- ================= SAMPEL GRAFIK =================
+local lastSampleGold, lastSampleBlock = 0, 0
+task.spawn(function()
+    while screenGui.Parent and alive() do
+        task.wait(ChartInterval)
+        if not alive() then break end
+
+        table.insert(GoldChart.data, LiveTotalGold - lastSampleGold)
+        table.insert(BlockChart.data, LiveBlockGain - lastSampleBlock)
+        lastSampleGold, lastSampleBlock = LiveTotalGold, LiveBlockGain
+
+        for _, ch in ipairs({GoldChart, BlockChart}) do
+            while #ch.data > MaxPoints do table.remove(ch.data, 1) end
+            redraw(ch)
         end
     end
 end)
 
-client.Idled:Connect(function()
-    local VU = game:GetService("VirtualUser")
-    VU:CaptureController()
-    VU:ClickButton2(Vector2.new(0, 0))
+-- ================= UTIL =================
+local function CreateSteelPlatform()
+    local part = Instance.new("Part")
+    part.Name = "SteelAnchorPlatform"
+    part.Size = Vector3.new(40, 3, 40)
+    part.Anchored = true
+    part.Transparency = 0.3
+    part.BrickColor = BrickColor.new("Bright blue")
+    part.Material = Enum.Material.DiamondPlate
+    part.Parent = Workspace
+    return part
+end
+
+local function getRoot()
+    local char = client.Character or client.CharacterAdded:Wait()
+    return char:WaitForChild("HumanoidRootPart", 10)
+end
+
+local function claim()
+    if not ClaimRemote then return end
+    if ClaimRemote:IsA("RemoteEvent") then
+        ClaimRemote:FireServer()
+    elseif ClaimRemote:IsA("RemoteFunction") then
+        ClaimRemote:InvokeServer()
+    end
+end
+
+local function getStageList()
+    local list = {}
+    for i = 1, MaxStageScan do
+        local s = Stages:FindFirstChild("CaveStage" .. i)
+        local dark = s and s:FindFirstChild("DarknessPart")
+        if dark then
+            table.insert(list, {index = i, part = dark})
+        end
+    end
+    return list
+end
+
+local function TouchChest(platform)
+    if not cfg["Chest"]["Enable"] then return end
+    local t = cfg["Chest"]["FindTimeout"]
+    local en = Stages:WaitForChild("TheEnd", t)
+    local ch = en and en:WaitForChild("GoldenChest", t)
+    local trigger = ch and ch:WaitForChild("Trigger", t)
+    local root = getRoot()
+
+    if not (trigger and trigger:IsA("BasePart") and root) then
+        StatusLabel.Text = "Trigger peti tidak ditemukan"
+        return
+    end
+
+    root.CFrame = trigger.CFrame
+    platform.CFrame = trigger.CFrame * CFrame.new(0, -4.5, 0)
+    task.wait(0.5)
+
+    if firetouchinterest then
+        firetouchinterest(root, trigger, 0)
+        task.wait(0.15)
+        firetouchinterest(root, trigger, 1)
+    end
+
+    ChestTouches = ChestTouches + 1
+    StatusLabel.Text = "Peti disentuh: " .. ChestTouches
+    task.wait(1)
+end
+
+-- ================= LAPORAN AWAL =================
+if cfg["Webhook"]["Send_On_Start"] then
+    task.delay(2, function()
+        if alive() then SendWebhookLog("Mulai", StatusLabel.Text) end
+    end)
+end
+
+-- ================= ENGINE UTAMA =================
+task.spawn(function()
+    while screenGui.Parent and alive() do
+        if not env.Busy then
+            StatusLabel.Text = "Status: Berhenti"
+            task.wait(0.5)
+        else
+            local platform = CreateSteelPlatform()
+
+            local ok, err = pcall(function()
+                local list = getStageList()
+                if #list == 0 then
+                    StatusLabel.Text = "Status: Stage tidak ditemukan"
+                    task.wait(3)
+                    return
+                end
+
+                local roundStartG = GoldObj and GoldObj.Value
+                local roundStartB = BlockObj and BlockObj.Value
+
+                for _, st in ipairs(list) do
+                    if not env.Busy or not alive() then return end
+                    local root = getRoot()
+                    if root then
+                        local before = GoldObj and GoldObj.Value
+                        root.CFrame = st.part.CFrame
+                        platform.CFrame = st.part.CFrame * CFrame.new(0, -4.5, 0)
+                        claim()
+                        StatusLabel.Text = "Farming: Stage " .. st.index .. "/" .. #list
+                        task.wait(StageWaits[st.index] or DefaultWait)
+                        if before and GoldObj then
+                            local d = GoldObj.Value - before
+                            StatusLabel.Text = "Stage " .. st.index .. "/" .. #list .. ": +" .. fmt(math.max(d, 0)) .. " gold"
+                        end
+                    end
+                end
+
+                if not env.Busy or not alive() then return end
+                TouchChest(platform)
+
+                if roundStartG and GoldObj then
+                    local g = GoldObj.Value - roundStartG
+                    if g >= 0 then
+                        LastGain = g
+                        RoundGainSum = RoundGainSum + g
+                        RoundsMeasured = RoundsMeasured + 1
+                    end
+                end
+                if roundStartB and BlockObj then
+                    LastBlockGain = math.max(0, BlockObj.Value - roundStartB)
+                end
+
+                LiveTotalBlocks = LiveTotalBlocks + cfg["Setting_Farm"]["Gold_Block_Per_Round"]
+                if LiveTotalBlocks % math.max(1, cfg["Webhook"]["Webhook_Every"]) == 0 then
+                    SendWebhookLog("Update", StatusLabel.Text)
+                end
+                if Penguin then Penguin:FireServer("PenguinCharacter") end
+            end)
+
+            platform:Destroy()
+            if not ok then
+                warn("[AFK Farm Ming] " .. tostring(err))
+                StatusLabel.Text = "Error, mengulang..."
+            end
+            task.wait(2)
+        end
+    end
 end)
