@@ -1,4 +1,4 @@
--- AFK FARM MING - KAITUN + GRAFIK + PETI (FINAL)
+-- AFK FARM MING - ALL IN ONE (KAITUN + GRAFIK + PETI)
 
 local env = (getgenv and getgenv()) or _G
 
@@ -9,16 +9,17 @@ env.Config = {
         ["FPS_Boost"] = true,
         ["Gold_Block_Per_Round"] = 1
     },
-    -- Jeda tiap stage (detik): 1-2 = 5, 3-7 = 3, 8-9 = 3.5
-    ["Stage_Waits"] = {5, 5, 3, 3, 3, 3, 3, 3.5, 3.5},
+    -- Jeda tiap stage (detik): 1-2 = 5, 3-7 = 3, 8-10 = 3.5
+    ["Stage_Waits"] = {5, 5, 3, 3, 3, 3, 3, 3.5, 3.5, 3.5},
     ["Skip_Stages"] = {1},          -- stage yang dilewati; kosongkan {} untuk tidak skip
     ["Anti_AFK"] = { ["Enable"] = true },
     ["Chest"] = {
-        ["Enable"] = true,          -- ambil gold block dari peti akhir
+        ["Enable"] = true,
+        ["Before_Stage"] = 99,      -- 8 = peti sebelum stage 8; 99 = peti di akhir ronde
+        ["Mode"] = "touch",         -- "touch" = sentuh tanpa teleport; "teleport" = pindah ke peti
         ["FindTimeout"] = 5,        -- tunggu peti dimuat (detik)
-        ["Retries"] = 3,            -- jumlah percobaan per ronde
-        ["Wait_Reward"] = 3,        -- tunggu gold block naik (detik)
-        ["Claim_After"] = true      -- panggil klaim hasil setelah peti
+        ["Wait_Reward"] = 1.5,      -- tunggu gold block naik (detik)
+        ["Claim_After"] = false     -- klaim hasil setelah peti
     },
     ["UI"] = {
         ["Overlay"] = true,         -- layar penuh gaya kaitun
@@ -66,9 +67,10 @@ end
 
 local cfg = fill(env.Config, {
     ["Setting_Farm"] = { ["Auto_Farm"] = true, ["FPS_Boost"] = true, ["Gold_Block_Per_Round"] = 1 },
-    ["Stage_Waits"] = {5, 5, 3, 3, 3, 3, 3, 3.5, 3.5},
+    ["Stage_Waits"] = {5, 5, 3, 3, 3, 3, 3, 3.5, 3.5, 3.5},
     ["Anti_AFK"] = { ["Enable"] = true },
-    ["Chest"] = { ["Enable"] = true, ["FindTimeout"] = 5, ["Retries"] = 3, ["Wait_Reward"] = 3, ["Claim_After"] = true },
+    ["Chest"] = { ["Enable"] = true, ["Before_Stage"] = 99, ["Mode"] = "touch", ["FindTimeout"] = 5,
+        ["Wait_Reward"] = 1.5, ["Claim_After"] = false },
     ["UI"] = { ["Overlay"] = true, ["Black_Screen"] = false, ["Hide_Username"] = false },
     ["Chart"] = { ["Interval"] = 30, ["Points"] = 30 },
     ["Webhook"] = { ["UrlWebhook"] = "", ["Enable"] = true, ["Webhook_Every"] = 5, ["Send_On_Start"] = true }
@@ -619,8 +621,15 @@ local function CreateSteelPlatform()
     return part
 end
 
+-- Tunggu karakter hidup (setelah mati/respawn) lalu ambil root
 local function getRoot()
-    local char = client.Character or client.CharacterAdded:Wait()
+    local char = client.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not char or not hum or hum.Health <= 0 then
+        StatusLabel.Text = "Menunggu respawn..."
+        char = client.CharacterAdded:Wait()
+        task.wait(1)
+    end
     return char:WaitForChild("HumanoidRootPart", 10)
 end
 
@@ -658,64 +667,38 @@ local function findTrigger()
     return trig
 end
 
-local function fireTouch(trigger)
-    if not firetouchinterest then return end
-    local char = client.Character
-    if not char then return end
-    local parts = {}
-    for _, p in ipairs(char:GetChildren()) do
-        if p:IsA("BasePart") and #parts < 6 then table.insert(parts, p) end
-    end
-    for _, p in ipairs(parts) do
-        pcall(firetouchinterest, p, trigger, 0)
-    end
-    task.wait(0.1)
-    for _, p in ipairs(parts) do
-        pcall(firetouchinterest, p, trigger, 1)
-    end
-end
-
 local function TouchChest(platform)
     if not cfg["Chest"]["Enable"] then return end
-    StatusLabel.Text = "Mencari peti akhir..."
     local trigger = findTrigger()
-    if not (trigger and trigger:IsA("BasePart")) then
+    local root = getRoot()
+    if not (trigger and trigger:IsA("BasePart") and root) then
         StatusLabel.Text = "Peti: Trigger tidak ditemukan"
         return
     end
 
     ChestTries = ChestTries + 1
     local beforeB = BlockObj and BlockObj.Value
-    local beforeG = GoldObj and GoldObj.Value
-    local got = false
-    local offsets = {
-        Vector3.new(0, 0, 0), Vector3.new(5, 0, 0), Vector3.new(-5, 0, 0),
-        Vector3.new(0, 0, 5), Vector3.new(0, 0, -5), Vector3.new(0, 0, 0)
-    }
 
-    for attempt = 1, cfg["Chest"]["Retries"] do
-        if not env.Busy or not alive() then return end
-        local root = getRoot()
-        if not root then break end
-
+    if cfg["Chest"]["Mode"] == "touch" and firetouchinterest then
+        -- sentuh dari posisi sekarang, tanpa teleport ke peti
+        pcall(firetouchinterest, root, trigger, 0)
+        task.wait(0.1)
+        pcall(firetouchinterest, root, trigger, 1)
+        StatusLabel.Text = "Peti: disentuh tanpa teleport"
+    else
+        -- sama dengan teleport stage: satu kali, lalu diam
         platform.CFrame = trigger.CFrame * CFrame.new(0, -4.5, 0)
-        StatusLabel.Text = "Peti: percobaan " .. attempt .. "/" .. cfg["Chest"]["Retries"]
-
-        for _, off in ipairs(offsets) do
-            root.CFrame = trigger.CFrame + off
-            task.wait(0.2)
-        end
-        fireTouch(trigger)
-
-        local t0 = os.clock()
-        while os.clock() - t0 < cfg["Chest"]["Wait_Reward"] do
-            if BlockObj and beforeB and BlockObj.Value > beforeB then got = true break end
-            task.wait(0.25)
-        end
-        if got then break end
+        root.CFrame = trigger.CFrame
+        StatusLabel.Text = "Peti: teleport"
     end
 
-    local gainG = (GoldObj and beforeG) and math.max(0, GoldObj.Value - beforeG) or 0
+    local got = false
+    local t0 = os.clock()
+    while os.clock() - t0 < cfg["Chest"]["Wait_Reward"] do
+        if BlockObj and beforeB and BlockObj.Value > beforeB then got = true break end
+        task.wait(0.25)
+    end
+
     if got then
         ChestOK = ChestOK + 1
         local d = BlockObj.Value - beforeB
@@ -724,11 +707,10 @@ local function TouchChest(platform)
     elseif not BlockObj then
         StatusLabel.Text = "Peti disentuh (gold block tidak terbaca)"
     else
-        StatusLabel.Text = "Peti: tidak ada gold block (+" .. fmt(gainG) .. " gold)"
+        StatusLabel.Text = "Peti: gold block tidak naik"
     end
 
     if cfg["Chest"]["Claim_After"] then claim() end
-    task.wait(1)
 end
 
 -- ================= LAPORAN AWAL =================
@@ -755,12 +737,21 @@ task.spawn(function()
                     return
                 end
                 local lastIndex = list[#list].index
+                local chestDone = false
+                local chestStage = cfg["Chest"]["Before_Stage"] or 99
 
                 local roundStartG = GoldObj and GoldObj.Value
                 local roundStartB = BlockObj and BlockObj.Value
 
                 for _, st in ipairs(list) do
                     if not env.Busy or not alive() then return end
+
+                    -- peti sebelum stage tertentu (kalau Before_Stage diatur)
+                    if not chestDone and st.index >= chestStage then
+                        chestDone = true
+                        TouchChest(platform)
+                    end
+
                     local root = getRoot()
                     if root then
                         local before = GoldObj and GoldObj.Value
@@ -777,7 +768,12 @@ task.spawn(function()
                 end
 
                 if not env.Busy or not alive() then return end
-                TouchChest(platform)
+
+                -- peti di akhir ronde (kalau belum disentuh)
+                if not chestDone then
+                    chestDone = true
+                    TouchChest(platform)
+                end
 
                 if roundStartG and GoldObj then
                     local g = GoldObj.Value - roundStartG
