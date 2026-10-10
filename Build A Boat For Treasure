@@ -1,4 +1,4 @@
--- AFK FARM MING - KAITUN EDITION + TAB GRAFIK
+-- AFK FARM MING - KAITUN + GRAFIK + PETI
 
 local env = (getgenv and getgenv()) or _G
 
@@ -12,20 +12,26 @@ env.Config = {
     -- Jeda tiap stage (detik): 1-2 = 5, 3-7 = 3, 8-9 = 3.5
     ["Stage_Waits"] = {5, 5, 3, 3, 3, 3, 3, 3.5, 3.5},
     ["Anti_AFK"] = { ["Enable"] = true },
-    ["Chest"] = { ["Enable"] = false, ["FindTimeout"] = 5 },
+    ["Chest"] = {
+        ["Enable"] = true,          -- ambil gold block dari peti akhir
+        ["FindTimeout"] = 5,        -- tunggu peti dimuat (detik)
+        ["Retries"] = 3,            -- jumlah percobaan per ronde
+        ["Wait_Reward"] = 3,        -- tunggu gold block naik (detik)
+        ["Claim_After"] = true      -- panggil klaim hasil setelah peti
+    },
     ["UI"] = {
-        ["Overlay"] = true,         -- layar penuh gaya kaitun
-        ["Black_Screen"] = false,   -- matikan render 3D (hemat baterai)
-        ["Hide_Username"] = false   -- sembunyikan nama di layar dan webhook
+        ["Overlay"] = true,
+        ["Black_Screen"] = false,
+        ["Hide_Username"] = false
     },
     ["Chart"] = {
-        ["Interval"] = 30,          -- satu titik grafik tiap N detik
-        ["Points"] = 30             -- jumlah titik yang ditampilkan
+        ["Interval"] = 30,
+        ["Points"] = 30
     },
     ["Webhook"] = {
         ["UrlWebhook"] = "",        -- isi: https://discord.com/api/webhooks/...
         ["Enable"] = true,
-        ["Webhook_Every"] = 5,      -- kirim laporan tiap N ronde
+        ["Webhook_Every"] = 5,
         ["Send_On_Start"] = true
     }
 }
@@ -42,7 +48,7 @@ local RunService = game:GetService("RunService")
 local client = Players.LocalPlayer
 local StartTime = os.time()
 local LiveTotalGold, LiveBlockGain, LiveTotalBlocks = 0, 0, 0
-local ChestTouches = 0
+local ChestOK, ChestTries, ChestBlockSum = 0, 0, 0
 local LastGain, LastBlockGain = 0, 0
 local RoundGainSum, RoundsMeasured = 0, 0
 
@@ -61,7 +67,7 @@ local cfg = fill(env.Config, {
     ["Setting_Farm"] = { ["Auto_Farm"] = true, ["FPS_Boost"] = true, ["Gold_Block_Per_Round"] = 1 },
     ["Stage_Waits"] = {5, 5, 3, 3, 3, 3, 3, 3.5, 3.5},
     ["Anti_AFK"] = { ["Enable"] = true },
-    ["Chest"] = { ["Enable"] = false, ["FindTimeout"] = 5 },
+    ["Chest"] = { ["Enable"] = true, ["FindTimeout"] = 5, ["Retries"] = 3, ["Wait_Reward"] = 3, ["Claim_After"] = true },
     ["UI"] = { ["Overlay"] = true, ["Black_Screen"] = false, ["Hide_Username"] = false },
     ["Chart"] = { ["Interval"] = 30, ["Points"] = 30 },
     ["Webhook"] = { ["UrlWebhook"] = "", ["Enable"] = true, ["Webhook_Every"] = 5, ["Send_On_Start"] = true }
@@ -217,6 +223,8 @@ local function SendWebhookLog(reason, statusText)
             {name = "Gold Block", value = "`" .. (BlockObj and fmt(BlockObj.Value) or "-") .. "`", inline = true},
             {name = "Block Naik", value = "`+" .. fmt(LiveBlockGain) .. "`", inline = true},
             {name = "Rounds", value = "`" .. LiveTotalBlocks .. "`", inline = true},
+            {name = "Peti", value = "`" .. ChestOK .. "/" .. ChestTries .. "`", inline = true},
+            {name = "Block dari Peti", value = "`+" .. fmt(ChestBlockSum) .. "`", inline = true},
             {name = "Gold/Jam", value = "`" .. fmt(perHour()) .. "`", inline = true},
             {name = "Rata-rata/Ronde", value = "`" .. fmt(avgRound()) .. "`", inline = true},
             {name = "Waktu", value = "`" .. timeText() .. "`", inline = true},
@@ -284,7 +292,6 @@ mk("UICorner", {CornerRadius = UDim.new(0, 12)}, Card)
 mk("UISizeConstraint", {MaxSize = Vector2.new(460, 360)}, Card)
 mk("UIStroke", {Color = C.accent, Thickness = 1.5}, Card)
 
--- Header
 local Avatar = mk("ImageLabel", {Size = UDim2.new(0, 44, 0, 44), Position = UDim2.new(0, 12, 0, 8),
     BackgroundColor3 = C.tile, BorderSizePixel = 0,
     Image = cfg["UI"]["Hide_Username"] and "" or ("rbxthumb://type=AvatarHeadShot&id=" .. client.UserId .. "&w=150&h=150")}, Card)
@@ -299,7 +306,7 @@ mk("TextLabel", {Size = UDim2.new(1, -72, 0, 18), Position = UDim2.new(0, 64, 0,
 
 local StatusLabel = mk("TextLabel", {Size = UDim2.new(1, -24, 0, 24), Position = UDim2.new(0, 12, 0, 60),
     BackgroundColor3 = C.tile, Text = StartNote or "Status: Memulai...", TextColor3 = C.white,
-    Font = Enum.Font.GothamMedium, TextSize = 13, BorderSizePixel = 0}, Card)
+    Font = Enum.Font.GothamMedium, TextSize = 13, BorderSizePixel = 0, TextTruncate = Enum.TextTruncate.AtEnd}, Card)
 mk("UICorner", {CornerRadius = UDim.new(0, 6)}, StatusLabel)
 
 -- ===== Tab STATS =====
@@ -326,6 +333,8 @@ local vGold = tile("GOLD", C.white)
 local vGoldGain = tile("GOLD NAIK", C.green)
 local vBlock = tile("GOLD BLOCK", C.white)
 local vBlockGain = tile("BLOCK NAIK", C.green)
+local vChest = tile("PETI BERHASIL / TOTAL", C.yellow)
+local vChestBlock = tile("BLOCK DARI PETI", C.green)
 local vLast = tile("RONDE TERAKHIR", C.green)
 local vAvg = tile("RATA-RATA / RONDE", C.yellow)
 local vRate = tile("GOLD / JAM", C.yellow)
@@ -562,6 +571,8 @@ task.spawn(function()
 
         vGoldGain.Text = "+" .. fmt(LiveTotalGold)
         vBlockGain.Text = "+" .. fmt(LiveBlockGain)
+        vChest.Text = ChestOK .. " / " .. ChestTries
+        vChestBlock.Text = "+" .. fmt(ChestBlockSum)
         vLast.Text = "+" .. fmt(LastGain)
         vAvg.Text = fmt(avgRound())
         vRate.Text = fmt(perHour())
@@ -630,31 +641,91 @@ local function getStageList()
     return list
 end
 
+-- ================= PETI =================
+local function findTrigger()
+    local t = cfg["Chest"]["FindTimeout"]
+    local en = Stages:FindFirstChild("TheEnd") or Stages:WaitForChild("TheEnd", t)
+    local ch = en and (en:FindFirstChild("GoldenChest") or en:WaitForChild("GoldenChest", t))
+    local trig = ch and (ch:FindFirstChild("Trigger") or ch:WaitForChild("Trigger", t))
+    if not trig and BoatStages then
+        local alt = BoatStages:FindFirstChild("GoldenChest", true)
+        trig = alt and alt:FindFirstChild("Trigger")
+    end
+    return trig
+end
+
+local function fireTouch(trigger)
+    if not firetouchinterest then return end
+    local char = client.Character
+    if not char then return end
+    local parts = {}
+    for _, p in ipairs(char:GetChildren()) do
+        if p:IsA("BasePart") and #parts < 6 then table.insert(parts, p) end
+    end
+    for _, p in ipairs(parts) do
+        pcall(firetouchinterest, p, trigger, 0)
+    end
+    task.wait(0.1)
+    for _, p in ipairs(parts) do
+        pcall(firetouchinterest, p, trigger, 1)
+    end
+end
+
 local function TouchChest(platform)
     if not cfg["Chest"]["Enable"] then return end
-    local t = cfg["Chest"]["FindTimeout"]
-    local en = Stages:WaitForChild("TheEnd", t)
-    local ch = en and en:WaitForChild("GoldenChest", t)
-    local trigger = ch and ch:WaitForChild("Trigger", t)
-    local root = getRoot()
-
-    if not (trigger and trigger:IsA("BasePart") and root) then
-        StatusLabel.Text = "Trigger peti tidak ditemukan"
+    StatusLabel.Text = "Mencari peti akhir..."
+    local trigger = findTrigger()
+    if not (trigger and trigger:IsA("BasePart")) then
+        StatusLabel.Text = "Peti: Trigger tidak ditemukan"
         return
     end
 
-    root.CFrame = trigger.CFrame
-    platform.CFrame = trigger.CFrame * CFrame.new(0, -4.5, 0)
-    task.wait(0.5)
+    ChestTries = ChestTries + 1
+    local beforeB = BlockObj and BlockObj.Value
+    local beforeG = GoldObj and GoldObj.Value
+    local got = false
+    local offsets = {
+        Vector3.new(0, 0, 0), Vector3.new(5, 0, 0), Vector3.new(-5, 0, 0),
+        Vector3.new(0, 0, 5), Vector3.new(0, 0, -5), Vector3.new(0, 0, 0)
+    }
 
-    if firetouchinterest then
-        firetouchinterest(root, trigger, 0)
-        task.wait(0.15)
-        firetouchinterest(root, trigger, 1)
+    for attempt = 1, cfg["Chest"]["Retries"] do
+        if not env.Busy or not alive() then return end
+        local root = getRoot()
+        if not root then break end
+
+        platform.CFrame = trigger.CFrame * CFrame.new(0, -4.5, 0)
+        StatusLabel.Text = "Peti: percobaan " .. attempt .. "/" .. cfg["Chest"]["Retries"]
+
+        -- masuk ke zona peti dan bergerak sedikit supaya sentuhan terdeteksi server
+        for _, off in ipairs(offsets) do
+            root.CFrame = trigger.CFrame + off
+            task.wait(0.2)
+        end
+        fireTouch(trigger)
+
+        -- tunggu gold block naik
+        local t0 = os.clock()
+        while os.clock() - t0 < cfg["Chest"]["Wait_Reward"] do
+            if BlockObj and beforeB and BlockObj.Value > beforeB then got = true break end
+            task.wait(0.25)
+        end
+        if got then break end
     end
 
-    ChestTouches = ChestTouches + 1
-    StatusLabel.Text = "Peti disentuh: " .. ChestTouches
+    local gainG = (GoldObj and beforeG) and math.max(0, GoldObj.Value - beforeG) or 0
+    if got then
+        ChestOK = ChestOK + 1
+        local d = BlockObj.Value - beforeB
+        ChestBlockSum = ChestBlockSum + d
+        StatusLabel.Text = "Peti berhasil: +" .. fmt(d) .. " gold block"
+    elseif not BlockObj then
+        StatusLabel.Text = "Peti disentuh (gold block tidak terbaca)"
+    else
+        StatusLabel.Text = "Peti: tidak ada gold block (+" .. fmt(gainG) .. " gold)"
+    end
+
+    if cfg["Chest"]["Claim_After"] then claim() end
     task.wait(1)
 end
 
