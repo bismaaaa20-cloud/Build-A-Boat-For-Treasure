@@ -1,4 +1,4 @@
--- AFK FARM MING - KAITUN + GRAFIK + PETI
+-- AFK FARM MING - KAITUN + GRAFIK + PETI (FINAL)
 
 local env = (getgenv and getgenv()) or _G
 
@@ -11,6 +11,7 @@ env.Config = {
     },
     -- Jeda tiap stage (detik): 1-2 = 5, 3-7 = 3, 8-9 = 3.5
     ["Stage_Waits"] = {5, 5, 3, 3, 3, 3, 3, 3.5, 3.5},
+    ["Skip_Stages"] = {1},          -- stage yang dilewati; kosongkan {} untuk tidak skip
     ["Anti_AFK"] = { ["Enable"] = true },
     ["Chest"] = {
         ["Enable"] = true,          -- ambil gold block dari peti akhir
@@ -20,18 +21,18 @@ env.Config = {
         ["Claim_After"] = true      -- panggil klaim hasil setelah peti
     },
     ["UI"] = {
-        ["Overlay"] = true,
-        ["Black_Screen"] = false,
-        ["Hide_Username"] = false
+        ["Overlay"] = true,         -- layar penuh gaya kaitun
+        ["Black_Screen"] = false,   -- matikan render 3D (hemat baterai)
+        ["Hide_Username"] = false   -- sembunyikan nama di layar dan webhook
     },
     ["Chart"] = {
-        ["Interval"] = 30,
-        ["Points"] = 30
+        ["Interval"] = 30,          -- satu titik grafik tiap N detik
+        ["Points"] = 30             -- jumlah titik yang ditampilkan
     },
     ["Webhook"] = {
         ["UrlWebhook"] = "",        -- isi: https://discord.com/api/webhooks/...
         ["Enable"] = true,
-        ["Webhook_Every"] = 5,
+        ["Webhook_Every"] = 5,      -- kirim laporan tiap N ronde
         ["Send_On_Start"] = true
     }
 }
@@ -79,6 +80,9 @@ local MaxStageScan = 20
 local ChartInterval = math.max(5, cfg["Chart"]["Interval"])
 local MaxPoints = math.max(5, cfg["Chart"]["Points"])
 local DisplayName = cfg["UI"]["Hide_Username"] and "Hidden" or client.Name
+
+local Skip = {}
+for _, n in ipairs(cfg["Skip_Stages"] or {1}) do Skip[n] = true end
 
 env.Busy = cfg["Setting_Farm"]["Auto_Farm"]
 
@@ -634,7 +638,7 @@ local function getStageList()
     for i = 1, MaxStageScan do
         local s = Stages:FindFirstChild("CaveStage" .. i)
         local dark = s and s:FindFirstChild("DarknessPart")
-        if dark then
+        if dark and not Skip[i] then
             table.insert(list, {index = i, part = dark})
         end
     end
@@ -697,14 +701,12 @@ local function TouchChest(platform)
         platform.CFrame = trigger.CFrame * CFrame.new(0, -4.5, 0)
         StatusLabel.Text = "Peti: percobaan " .. attempt .. "/" .. cfg["Chest"]["Retries"]
 
-        -- masuk ke zona peti dan bergerak sedikit supaya sentuhan terdeteksi server
         for _, off in ipairs(offsets) do
             root.CFrame = trigger.CFrame + off
             task.wait(0.2)
         end
         fireTouch(trigger)
 
-        -- tunggu gold block naik
         local t0 = os.clock()
         while os.clock() - t0 < cfg["Chest"]["Wait_Reward"] do
             if BlockObj and beforeB and BlockObj.Value > beforeB then got = true break end
@@ -752,6 +754,7 @@ task.spawn(function()
                     task.wait(3)
                     return
                 end
+                local lastIndex = list[#list].index
 
                 local roundStartG = GoldObj and GoldObj.Value
                 local roundStartB = BlockObj and BlockObj.Value
@@ -764,11 +767,11 @@ task.spawn(function()
                         root.CFrame = st.part.CFrame
                         platform.CFrame = st.part.CFrame * CFrame.new(0, -4.5, 0)
                         claim()
-                        StatusLabel.Text = "Farming: Stage " .. st.index .. "/" .. #list
+                        StatusLabel.Text = "Farming: Stage " .. st.index .. "/" .. lastIndex
                         task.wait(StageWaits[st.index] or DefaultWait)
                         if before and GoldObj then
                             local d = GoldObj.Value - before
-                            StatusLabel.Text = "Stage " .. st.index .. "/" .. #list .. ": +" .. fmt(math.max(d, 0)) .. " gold"
+                            StatusLabel.Text = "Stage " .. st.index .. "/" .. lastIndex .. ": +" .. fmt(math.max(d, 0)) .. " gold"
                         end
                     end
                 end
